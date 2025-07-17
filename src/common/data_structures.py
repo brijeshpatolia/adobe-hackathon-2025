@@ -15,6 +15,7 @@ class TextSpan:
     font_size: int
     font_name: str
     is_bold: bool
+    color: int
     page: int # The page number where the span is located
     x0: float
     y0: float
@@ -37,7 +38,12 @@ class DocumentOutline:
 
 @dataclass
 class StyleProfile:
-    """Stores the statistical analysis of document styles."""
+    """
+    Stores the statistical analysis of a document's styles.
+    This profile defines the "fingerprint" of the standard body text.
+    """
     body_text_size: int = 0
-    body_text_font: str = ""
-    # We can add more profile metrics later, like common fonts, heading sizes, etc.
+    body_font_name: str = ""
+    body_is_bold: bool = False
+    body_color: int = 0
+   

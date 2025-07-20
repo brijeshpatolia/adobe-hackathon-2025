@@ -61,7 +61,7 @@ if __name__ == "__main__":
     
     # Use one of the sample PDFs from the repository
     # The 'r' prefix is important for Windows paths
-    pdf_file_path = r"C:\Users\Brijesh\Downloads\E0CCG5S312.pdf"
+    pdf_file_path = r"C:\Users\Brijesh\Downloads\E0H1CM114.pdf"
     
     # Define the output file path
     output_filename = os.path.basename(pdf_file_path).replace('.pdf', '.json')

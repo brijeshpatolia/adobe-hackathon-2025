@@ -2,49 +2,43 @@
 
 import logging
 import re
-from typing import List, Tuple, Optional, Callable
-from collections import defaultdict
+from typing import List, Tuple, Dict
+from collections import defaultdict, Counter
 
+# Assuming these are in your project structure
 from src.interfaces.pipeline_interfaces import IClassifier
 from src.common.data_structures import TextSpan, StyleProfile, DocumentOutline, Heading
 
 # --- Constants for Readability & Tuning ---
 LINE_VERTICAL_TOLERANCE = 2.0
-MAX_HEADING_WORD_COUNT = 15 # A line with more words is likely a sentence, not a heading.
-SPARSE_DOCUMENT_LINE_THRESHOLD = 35 # Heuristic to detect sparse, poster-like documents.
+MIN_HEADING_FONT_SIZE_INCREASE = 2
+MAX_HEADING_WORD_COUNT = 35 # Increased for long headings
+FORM_DETECTION_THRESHOLD_RATIO = 0.8 
+# NEW: Define header/footer vertical position thresholds (e.g., top/bottom 15% of a standard page)
+HEADER_Y_THRESHOLD = 120 # Points from top
+FOOTER_Y_THRESHOLD = 700 # Points from top
 
 class HeadingClassifier(IClassifier):
     """
-    An advanced, rule-based classifier for identifying document structure.
-    It uses a multi-pass strategy to first filter out non-heading content,
-    then identify heading candidates, and finally rank and validate them.
+    A robust, multi-heuristic classifier that correctly identifies document structure
+    by filtering out headers/footers, tables of contents, and detecting document types
+    like forms before applying a refined style-based hierarchy analysis.
     """
-    def __init__(self):
-        """
-        Initializes the classifier and defines the rule engine's strategy.
-        """
-        self.filter_rules: List[Callable[[List[TextSpan]], bool]] = [
-            self._filter_is_table_of_contents,
-            self._filter_is_long_sentence,
-        ]
-        self.heading_candidate_rules: List[Callable[[List[TextSpan], StyleProfile], bool]] = [
-            self._is_potential_heading_by_style,
-            self._is_potential_heading_by_prefix
-        ]
 
     def _group_spans_into_lines(self, spans: List[TextSpan]) -> List[List[TextSpan]]:
         """Groups individual text spans into coherent lines based on their vertical position."""
-        if not spans: return []
+        if not spans:
+            return []
+        
         lines_by_page_and_y = defaultdict(lambda: defaultdict(list))
         for span in spans:
             page_lines = lines_by_page_and_y[span.page]
             found_line = False
-            for y_key in page_lines.keys():
+            for y_key in list(page_lines.keys()):
                 if abs(span.y0 - y_key) < LINE_VERTICAL_TOLERANCE:
-                    if not page_lines[y_key] or (span.x0 - page_lines[y_key][-1].x1) < 30:
-                        page_lines[y_key].append(span)
-                        found_line = True
-                        break
+                    page_lines[y_key].append(span)
+                    found_line = True
+                    break
             if not found_line:
                 page_lines[span.y0].append(span)
 
@@ -52,147 +46,148 @@ class HeadingClassifier(IClassifier):
         for page_num in sorted(lines_by_page_and_y.keys()):
             page_lines = lines_by_page_and_y[page_num]
             for y_key in sorted(page_lines.keys()):
-                line_spans = page_lines[y_key]
-                line_spans.sort(key=lambda s: s.x0)
+                line_spans = sorted(page_lines[y_key], key=lambda s: s.x0)
                 all_lines.append(line_spans)
         
         return all_lines
 
-    # --- Filter Rules (to exclude non-headings) ---
-
-    def _filter_is_table_of_contents(self, line: List[TextSpan]) -> bool:
-        """Filter Rule: Returns True if the line looks like a ToC entry."""
-        line_text = " ".join(s.text for s in line)
-        return bool(re.search(r'\.{4,}\s*\d+\s*$', line_text))
-
-    def _filter_is_long_sentence(self, line: List[TextSpan]) -> bool:
-        """Filter Rule: Returns True if the line is too long to be a heading."""
-        word_count = len(" ".join(s.text for s in line).split())
-        return word_count > MAX_HEADING_WORD_COUNT
-
-    # --- Heading Candidate Identification Rules ---
-
-    def _is_potential_heading_by_style(self, line: List[TextSpan], profile: StyleProfile) -> bool:
-        """Rule: Returns True if the line's style deviates from body text."""
-        if not line: return False
-        # A heading should have a consistent bold style.
-        if not all(s.is_bold for s in line):
-            return False
+    def _get_line_properties(self, line: List[TextSpan]) -> Dict:
+        """Calculates key properties of a line of text."""
+        if not line: return {}
         
-        is_larger = line[0].font_size > profile.body_text_size
-        is_bolder = line[0].is_bold and not profile.body_is_bold
-        return is_larger and is_bolder
+        text = " ".join(s.text for s in line).strip()
+        first_span = line[0]
+        
+        return {
+            "text": text, "font_size": first_span.font_size, "font_name": first_span.font_name,
+            "is_bold": all(s.is_bold for s in line), "page": first_span.page, "y0": first_span.y0,
+            "word_count": len(text.split())
+        }
+    
+    def _filter_headers_and_footers(self, line_props: List[Dict]) -> List[Dict]:
+        """
+        **CRUCIAL FIX**: Removes repetitive header and footer lines.
+        This is the main fix for the "Overview" spam.
+        """
+        potential_headers = defaultdict(int)
+        potential_footers = defaultdict(int)
 
-    def _is_potential_heading_by_prefix(self, line: List[TextSpan], profile: StyleProfile) -> bool:
-        """Rule: Returns True if the line starts with a numerical/alpha prefix."""
-        line_text = " ".join(s.text for s in line)
-        if re.match(r'^((\d+\.)+\d*|[A-Z]\.)\s+', line_text):
-             # And the text part is bold (even if the number isn't)
-             return any(s.is_bold for s in line)
-        return False
+        # Identify lines that appear frequently in header/footer areas
+        for prop in line_props:
+            if prop['y0'] < HEADER_Y_THRESHOLD:
+                potential_headers[prop['text']] += 1
+            elif prop['y0'] > FOOTER_Y_THRESHOLD:
+                potential_footers[prop['text']] += 1
+        
+        # Find headers/footers that appear on at least 2 pages
+        headers = {text for text, count in potential_headers.items() if count >= 2}
+        footers = {text for text, count in potential_footers.items() if count >= 2}
+        
+        # Filter out the identified lines
+        return [
+            prop for prop in line_props 
+            if prop['text'] not in headers and prop['text'] not in footers
+        ]
 
-    # --- Title Identification ---
+    def _is_table_of_contents_entry(self, line_text: str) -> bool:
+        """Detects ToC entries."""
+        return bool(re.search(r'.+\s*\.{4,}\s*\d+\s*$', line_text))
 
-    def _find_title(self, lines: List[List[TextSpan]], profile: StyleProfile) -> Tuple[str, int]:
-        """Finds the document title by looking for a block of prominent text on the first page."""
+    def _find_title(self, line_props: List[Dict]) -> Tuple[str, int]:
+        """Identifies the document title from the most prominent text on the first page."""
+        if not line_props:
+            return "Untitled Document", -1
+
+        first_page_props = [p for p in line_props if p.get("page") == 1]
+        if not first_page_props:
+            return "Untitled Document", -1
+
+        max_font_size = max((p.get("font_size", 0) for p in first_page_props), default=0)
+        
         title_lines = []
-        last_line_index = -1
-        
-        for i, line in enumerate(lines):
-            if line[0].page != 1: break
-            
-            is_title_style = line[0].font_size > profile.body_text_size + 2
-            
-            if is_title_style:
-                if title_lines and abs(line[0].y0 - lines[last_line_index][0].y0) > 25:
-                    break
-                title_lines.append(" ".join(s.text for s in line))
-                last_line_index = i
-            elif title_lines:
+        title_end_index = -1
+        # Capture all contiguous lines on page 1 that have the max font size
+        for i, prop in enumerate(line_props):
+            if prop.get("page") == 1 and prop.get("font_size") == max_font_size:
+                title_lines.append(prop["text"])
+                title_end_index = i
+            elif title_lines: # Stop after the first non-title line
                 break
         
-        if not title_lines: return "Untitled Document", -1
-        return " ".join(title_lines), last_line_index
+        return " ".join(title_lines) or "Untitled Document", title_end_index
 
-    # --- Hierarchy Ranking and Post-Processing ---
+    def _rank_heading_styles(self, candidates: List[Dict]) -> List[Tuple]:
+        """Ranks heading styles primarily by font size, then by frequency."""
+        style_counts = Counter((p["font_size"], p["font_name"], p["is_bold"]) for p in candidates)
+        return sorted(style_counts, key=lambda style: (style[0], style_counts[style]), reverse=True)
 
-    def _rank_and_assign_levels(self, candidates: List[List[TextSpan]]) -> List[Heading]:
-        """Assigns H1, H2, H3 levels based on numerical prefixes or relative font sizes."""
+    def _assign_levels(self, candidates: List[Dict], style_rank: List[Tuple]) -> List[Heading]:
+        """
+        Assigns H1-H3 levels based on a refined hierarchy logic.
+        """
         headings = []
-        for line in candidates:
-            line_text = " ".join(s.text for s in line).strip()
+        if not style_rank: return []
+        
+        # Group styles by their font size to determine hierarchical level
+        ranked_font_sizes = sorted(list(set(s[0] for s in style_rank)), reverse=True)
+        level_map = {size: f"H{i+1}" for i, size in enumerate(ranked_font_sizes[:3])}
+
+        for cand in candidates:
+            line_text = cand["text"]
             level = None
             
-            # Prioritize numerical prefixes for level assignment
-            match = re.match(r'^((\d+\.)+\d*|[A-Z]\.)\s*', line_text)
+            # Priority 1: Numerical prefixes (e.g., "2.1")
+            match = re.match(r'^((\d+\.)+\d*)\s+', line_text)
             if match:
-                # Logic: "1." -> 1 part -> H1. "2.1" -> 2 parts -> H2.
-                numeric_parts = re.findall(r'(\d+)', match.group(0))
-                level_num = len(numeric_parts)
-                if level_num <= 3:
-                    level = f"H{level_num}"
+                level_num = len(re.findall(r'(\d+)', match.group(0)))
+                if 1 <= level_num <= 3: level = f"H{level_num}"
             
-            # Fallback for non-numbered headings (like "Acknowledgements")
+            # Priority 2: Style-based hierarchy based on font size
             if not level:
-                # This is a simplified fallback; a full ranking would compare all candidate font sizes.
-                # For this contest, assuming non-numbered headings are H1 is a safe bet.
-                level = "H1"
+                level = level_map.get(cand["font_size"])
 
-            headings.append(Heading(text=line_text, level=level, page=line[0].page))
+            if level:
+                headings.append(Heading(text=line_text, level=level, page=cand["page"]))
+
         return headings
-
-    def _post_process_hierarchy(self, headings: List[Heading]) -> List[Heading]:
-        """Refines the list of headings to enforce a logical hierarchy."""
-        processed_headings = []
-        last_h1 = None
-        last_h2 = None
-        for heading in headings:
-            if heading.level == "H1":
-                last_h1 = heading
-                last_h2 = None
-                processed_headings.append(heading)
-            elif heading.level == "H2":
-                if last_h1:
-                    last_h2 = heading
-                    processed_headings.append(heading)
-            elif heading.level == "H3":
-                if last_h2:
-                    processed_headings.append(heading)
-        
-        if len(headings) != len(processed_headings):
-            logging.info(f"Post-processing pruned {len(headings) - len(processed_headings)} illogical headings.")
-        return processed_headings
-
-    # --- Main Classification Orchestrator ---
 
     def classify(self, spans: List[TextSpan], profile: StyleProfile) -> DocumentOutline:
         """The main orchestration method for the classification process."""
+        if not spans:
+            return DocumentOutline(title="Untitled Document", headings=[])
+            
         lines = self._group_spans_into_lines(spans)
+        line_props = [self._get_line_properties(line) for line in lines if line]
         
-        if len(lines) < SPARSE_DOCUMENT_LINE_THRESHOLD:
-            # Logic for flyers and posters
-            logging.info("Sparse document detected. Applying poster/flyer logic.")
-            if not lines: return DocumentOutline(title="", headings=[])
-            largest_line = max(lines, key=lambda line: line[0].font_size)
-            h1_text = " ".join(s.text for s in largest_line)
-            return DocumentOutline(title="", headings=[Heading(text=h1_text, level="H1", page=largest_line[0].page)])
+        # **STEP 1: Filter out headers and footers BEFORE any other analysis**
+        clean_line_props = self._filter_headers_and_footers(line_props)
 
-        # --- Full Pipeline for Structured Documents ---
-        title, title_end_line_index = self._find_title(lines, profile)
-        content_lines = lines[title_end_line_index + 1:]
+        title_text, title_end_index = self._find_title(clean_line_props)
         
-        potential_lines = [
-            line for line in content_lines
-            if not any(filter_rule(line) for filter_rule in self.filter_rules)
-        ]
+        heading_candidates = []
+        for prop in clean_line_props:
+            # Skip any remaining lines on the first page
+            if prop['page'] == 1:
+                continue
 
-        heading_candidates = [
-            line for line in potential_lines
-            if any(rule(line, profile) for rule in self.heading_candidate_rules)
-        ]
+            if self._is_table_of_contents_entry(prop["text"]):
+                continue
+
+            is_stylistically_distinct = (
+                (prop["is_bold"] and not profile.body_is_bold) or
+                (prop["font_size"] >= profile.body_text_size + MIN_HEADING_FONT_SIZE_INCREASE)
+            )
+
+            if is_stylistically_distinct and prop["word_count"] < MAX_HEADING_WORD_COUNT:
+                heading_candidates.append(prop)
         
-        ranked_headings = self._rank_and_assign_levels(heading_candidates)
-        final_headings = self._post_process_hierarchy(ranked_headings)
+        if not heading_candidates:
+             return DocumentOutline(title=title_text, headings=[])
         
-        logging.info(f"Classification complete. Found title: '{title}'. Found {len(final_headings)} final headings.")
-        return DocumentOutline(title=title, headings=final_headings)
+        ranked_styles = self._rank_heading_styles(heading_candidates)
+        final_headings = self._assign_levels(heading_candidates, ranked_styles)
+        
+        final_headings.sort(key=lambda h: (h.page, next((p['y0'] for p in clean_line_props if h.text.startswith(p['text']) and p['page'] == h.page), 0)))
+
+        logging.info(f"Classification complete. Found title: '{title_text}'. Found {len(final_headings)} headings.")
+        return DocumentOutline(title=title_text, headings=final_headings)

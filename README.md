@@ -36,25 +36,55 @@ Our methodology is as follows:
 
 ### 3. How to Build and Run the Solution
 
-The entire solution is containerized using Docker for portability and to ensure it runs consistently in the judging environment.
+This section provides a complete step-by-step guide for cloning the repository and running the solution in its intended Docker environment.
 
 **Prerequisites:**
-* Docker must be installed and running.
+* [Git](https://git-scm.com/downloads) must be installed.
+* [Docker](https://www.docker.com/get-started) must be installed and running.
 
-**Step 1: Build the Docker Image**
+**Step 1: Clone the Repository**
 
-Navigate to the root directory of the project (where the `Dockerfile` is located) and execute the following command to build the image:
+First, clone the project repository to your local machine using the following command:
+
+```bash
+git clone <your-repository-url>
+```
+*(Note: Replace `<your-repository-url>` with the actual URL of the Git repository.)*
+
+**Step 2: Navigate to the Project Directory**
+
+Change your current directory to the newly cloned project folder:
+
+```bash
+cd <repository-folder-name>
+```
+
+**Step 3: Prepare Input and Output Directories**
+
+The container requires an `input` folder containing the PDFs to be processed and an `output` folder where the JSON results will be saved.
+
+Create these two folders in the project's root directory:
+```bash
+mkdir input
+mkdir output
+```
+Now, place all the PDF files you want to process inside the newly created `input` folder.
+
+**Step 4: Build the Docker Image**
+
+From the root directory of the project, run the following command to build the Docker image. This command reads the `Dockerfile` and packages the application and its dependencies into a self-contained image.
 
 ```bash
 docker build -t adobe-hackathon-solution .
 ```
 
-**Step 2: Run the Container**
+**Step 5: Run the Solution**
 
-To process PDFs, place them in a local input directory and create an empty local output directory. Use the command below to run the container, making sure to provide the absolute paths to your local directories. The container will automatically process all PDFs from the input folder and save the corresponding JSON files to the output folder, as per the "Expected Execution" section of the hackathon rules.
+Finally, run the container using the exact command specified for the hackathon evaluation. This command mounts your local `input` and `output` folders and runs the container in an isolated environment with no network access.
 
 ```bash
-docker run --rm -v /path/to/your/local_input:/app/input -v /path/to/your/local_output:/app/output adobe-hackathon-solution
+docker run --rm -v ${PWD}/input:/app/input -v ${PWD}/output:/app/output --network none adobe-hackathon-solution
 ```
+*(Note: The command above works directly on **Linux**, **macOS**, and **Windows PowerShell**. For the legacy **Windows Command Prompt (CMD)**, you must replace `${PWD}` with `%cd%`.)*
 
-*(Note: Replace `/path/to/your/local_input` and `/path/to/your/local_output` with the actual paths on your machine.)*
+After the command finishes, the `output` folder on your local machine will contain the generated `.json` files, one for each PDF that was in the `input` folder.

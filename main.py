@@ -57,6 +57,7 @@ class DocumentProcessor:
             return "{}"
         style_profile = self.analyzer.analyze(spans)
         if is_document_visually_driven(spans):
+            logging.info("Using visual classifier (color document).")
             outline = self.visual_classifier.classify(spans, style_profile)
         else:
             logging.info("Using standard heading classifier (monochrome document).")
@@ -66,6 +67,14 @@ class DocumentProcessor:
         return json_output
 
 if __name__ == "__main__":
+    # Define the input and output directories as specified in the hackathon rules
+    INPUT_DIR = "/app/input"
+    OUTPUT_DIR = "/app/output"
+
+    # Create the output directory if it doesn't exist
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Initialize the document processor
     processor = DocumentProcessor(
         extractor=PDFExtractor(),
         analyzer=StyleAnalyzer(),
@@ -73,12 +82,22 @@ if __name__ == "__main__":
         visual_classifier=VisualClassifier(),
         formatter=JSONFormatter()
     )
-    pdf_file_path = r"data\STEMPathwaysFlyer.pdf"
-    output_filename = os.path.basename(pdf_file_path).replace('.pdf', '.json')
-    output_filepath = os.path.join("output", output_filename)
-    os.makedirs("output", exist_ok=True)
-    output_json_string = processor.process_document(pdf_file_path)
-    with open(output_filepath, "w", encoding='utf-8') as f:
-        f.write(output_json_string)
-    print(f"\nJSON output saved to {output_filepath}")
-    print(output_json_string)
+
+    # Process each PDF file found in the input directory
+    if not os.path.isdir(INPUT_DIR):
+        logging.error(f"Input directory not found: {INPUT_DIR}. This path is expected inside the Docker container.")
+    else:
+        for filename in os.listdir(INPUT_DIR):
+            if filename.lower().endswith(".pdf"):
+                pdf_file_path = os.path.join(INPUT_DIR, filename)
+                output_filename = os.path.splitext(filename)[0] + '.json'
+                output_filepath = os.path.join(OUTPUT_DIR, output_filename)
+
+                output_json_string = processor.process_document(pdf_file_path)
+
+                with open(output_filepath, "w", encoding='utf-8') as f:
+                    f.write(output_json_string)
+                
+                logging.info(f"Successfully processed and saved {output_filename}")
+
+    logging.info("All documents processed.")
